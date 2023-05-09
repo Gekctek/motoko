@@ -1,0 +1,1413 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="214" onload="init(evt)" viewBox="0 0 1200 214" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="214.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >reversi.mo</text>
+<text id="details" x="10.00" y="197" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="197" > </text>
+<g id="frames">
+<g >
+<title>can_tag_i64 (96 samples, 0.01%)</title><rect x="316.6" y="53" width="0.1" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="319.59" y="63.5" ></text>
+</g>
+<g >
+<title>B_add (600 samples, 0.08%)</title><rect x="327.5" y="69" width="1.0" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="330.50" y="79.5" ></text>
+</g>
+<g >
+<title>@serialize_go&lt;t&gt; (393 samples, 0.05%)</title><rect x="301.7" y="85" width="0.6" height="15.0" fill="rgb(244,156,43)" rx="2" ry="2" />
+<text  x="304.70" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (100 samples, 0.01%)</title><rect x="1173.7" y="101" width="0.2" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="1176.73" y="111.5" ></text>
+</g>
+<g >
+<title>place (548,327 samples, 73.50%)</title><rect x="300.4" y="149" width="867.3" height="15.0" fill="rgb(252,165,52)" rx="2" ry="2" />
+<text  x="303.40" y="159.5" >place</text>
+</g>
+<g >
+<title>exists (30,738 samples, 4.12%)</title><rect x="529.5" y="85" width="48.7" height="15.0" fill="rgb(234,142,32)" rx="2" ry="2" />
+<text  x="532.54" y="95.5" >exists</text>
+</g>
+<g >
+<title>can_tag_i64 (512 samples, 0.07%)</title><rect x="1178.4" y="69" width="0.8" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="1181.36" y="79.5" ></text>
+</g>
+<g >
+<title>B_add (300 samples, 0.04%)</title><rect x="326.0" y="85" width="0.5" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="329.01" y="95.5" ></text>
+</g>
+<g >
+<title>memcpy (284 samples, 0.04%)</title><rect x="58.7" y="85" width="0.4" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="61.69" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (5,150 samples, 0.69%)</title><rect x="468.0" y="101" width="8.2" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="471.01" y="111.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (432 samples, 0.06%)</title><rect x="313.4" y="53" width="0.7" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="316.40" y="63.5" ></text>
+</g>
+<g >
+<title>@serialize&lt;t&gt; (1,122 samples, 0.15%)</title><rect x="301.2" y="101" width="1.8" height="15.0" fill="rgb(244,156,43)" rx="2" ry="2" />
+<text  x="304.22" y="111.5" ></text>
+</g>
+<g >
+<title>B_gt (650 samples, 0.09%)</title><rect x="1179.2" y="85" width="1.0" height="15.0" fill="rgb(232,124,30)" rx="2" ry="2" />
+<text  x="1182.17" y="95.5" ></text>
+</g>
+<g >
+<title>trans_state4 (92 samples, 0.01%)</title><rect x="272.4" y="133" width="0.1" height="15.0" fill="rgb(243,158,42)" rx="2" ry="2" />
+<text  x="275.37" y="143.5" ></text>
+</g>
+<g >
+<title>nat_sub (168 samples, 0.02%)</title><rect x="331.0" y="69" width="0.2" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="333.95" y="79.5" ></text>
+</g>
+<g >
+<title>flip (2,976 samples, 0.40%)</title><rect x="325.1" y="101" width="4.7" height="15.0" fill="rgb(244,139,43)" rx="2" ry="2" />
+<text  x="328.14" y="111.5" ></text>
+</g>
+<g >
+<title>B_add (2,900 samples, 0.39%)</title><rect x="525.0" y="85" width="4.5" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="527.96" y="95.5" ></text>
+</g>
+<g >
+<title>range (125 samples, 0.02%)</title><rect x="299.0" y="101" width="0.2" height="15.0" fill="rgb(247,146,46)" rx="2" ry="2" />
+<text  x="301.98" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::types::object_size::h0cd0fcbd64ac8470 (128 samples, 0.02%)</title><rect x="1189.7" y="101" width="0.2" height="15.0" fill="rgb(238,127,36)" rx="2" ry="2" />
+<text  x="1192.73" y="111.5" ></text>
+</g>
+<g >
+<title>nat_sub (700 samples, 0.09%)</title><rect x="582.8" y="53" width="1.1" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="585.75" y="63.5" ></text>
+</g>
+<g >
+<title>range (3,375 samples, 0.45%)</title><rect x="1131.6" y="101" width="5.3" height="15.0" fill="rgb(247,146,46)" rx="2" ry="2" />
+<text  x="1134.59" y="111.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (31,776 samples, 4.26%)</title><rect x="827.6" y="69" width="50.3" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="830.59" y="79.5" >can_t..</text>
+</g>
+<g >
+<title>alloc_words (78 samples, 0.01%)</title><rect x="1181.1" y="85" width="0.1" height="15.0" fill="rgb(241,128,39)" rx="2" ry="2" />
+<text  x="1184.11" y="95.5" ></text>
+</g>
+<g >
+<title>leb128_decode (67 samples, 0.01%)</title><rect x="1181.5" y="117" width="0.1" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="1184.52" y="127.5" ></text>
+</g>
+<g >
+<title>$lambda (528,686 samples, 70.87%)</title><rect x="300.7" y="133" width="836.2" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="303.69" y="143.5" >$lambda</text>
+</g>
+<g >
+<title>compacting_gc (14,424 samples, 1.93%)</title><rect x="1144.7" y="133" width="22.8" height="15.0" fill="rgb(227,149,24)" rx="2" ry="2" />
+<text  x="1147.73" y="143.5" >c..</text>
+</g>
+<g >
+<title>can_tag_i64 (3,976 samples, 0.53%)</title><rect x="114.9" y="85" width="6.3" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="117.94" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (64 samples, 0.01%)</title><rect x="329.7" y="53" width="0.1" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="332.66" y="63.5" ></text>
+</g>
+<g >
+<title>B_ge (25,500 samples, 3.42%)</title><rect x="895.6" y="85" width="40.3" height="15.0" fill="rgb(241,124,39)" rx="2" ry="2" />
+<text  x="898.55" y="95.5" >B_ge</text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::compacting_gc::h6c11211cef49c9d1 (4,713 samples, 0.63%)</title><rect x="1182.5" y="117" width="7.4" height="15.0" fill="rgb(231,127,29)" rx="2" ry="2" />
+<text  x="1185.48" y="127.5" ></text>
+</g>
+<g >
+<title>init (8,506 samples, 1.14%)</title><rect x="285.7" y="117" width="13.5" height="15.0" fill="rgb(236,161,34)" rx="2" ry="2" />
+<text  x="288.72" y="127.5" ></text>
+</g>
+<g >
+<title>Array.idx (216 samples, 0.03%)</title><rect x="311.6" y="53" width="0.3" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="314.60" y="63.5" ></text>
+</g>
+<g >
+<title>eventually (42,850 samples, 5.74%)</title><rect x="516.1" y="101" width="67.8" height="15.0" fill="rgb(243,165,42)" rx="2" ry="2" />
+<text  x="519.08" y="111.5" >eventua..</text>
+</g>
+<g >
+<title>alloc_words (2,106 samples, 0.28%)</title><rect x="1133.6" y="85" width="3.3" height="15.0" fill="rgb(241,128,39)" rx="2" ry="2" />
+<text  x="1136.60" y="95.5" ></text>
+</g>
+<g >
+<title>__wasm_call_ctors (680 samples, 0.09%)</title><rect x="299.3" y="133" width="1.0" height="15.0" fill="rgb(239,119,38)" rx="2" ry="2" />
+<text  x="302.26" y="143.5" ></text>
+</g>
+<g >
+<title>B_lt (360 samples, 0.05%)</title><rect x="314.9" y="69" width="0.5" height="15.0" fill="rgb(226,146,24)" rx="2" ry="2" />
+<text  x="317.85" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::types::object_size::h0cd0fcbd64ac8470 (384 samples, 0.05%)</title><rect x="1166.9" y="101" width="0.6" height="15.0" fill="rgb(238,127,36)" rx="2" ry="2" />
+<text  x="1169.94" y="111.5" ></text>
+</g>
+<g >
+<title>B_mul (135 samples, 0.02%)</title><rect x="291.9" y="101" width="0.2" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="294.87" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (26,220 samples, 3.51%)</title><rect x="679.3" y="85" width="41.5" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="682.31" y="95.5" >Arr..</text>
+</g>
+<g >
+<title>@serialize&lt;t&gt; (30,872 samples, 4.14%)</title><rect x="10.3" y="101" width="48.8" height="15.0" fill="rgb(244,156,43)" rx="2" ry="2" />
+<text  x="13.30" y="111.5" >@ser..</text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (68 samples, 0.01%)</title><rect x="1182.2" y="101" width="0.1" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="1185.20" y="111.5" ></text>
+</g>
+<g >
+<title>B_gt (3,240 samples, 0.43%)</title><rect x="174.1" y="85" width="5.1" height="15.0" fill="rgb(232,124,30)" rx="2" ry="2" />
+<text  x="177.05" y="95.5" ></text>
+</g>
+<g >
+<title>obj_idx&lt;0&gt; (459 samples, 0.06%)</title><rect x="1048.9" y="101" width="0.7" height="15.0" fill="rgb(247,139,46)" rx="2" ry="2" />
+<text  x="1051.87" y="111.5" ></text>
+</g>
+<g >
+<title>$lambda (1,149 samples, 0.15%)</title><rect x="301.2" y="117" width="1.8" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="304.20" y="127.5" ></text>
+</g>
+<g >
+<title>B_add (1,350 samples, 0.18%)</title><rect x="311.9" y="69" width="2.2" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="314.94" y="79.5" ></text>
+</g>
+<g >
+<title>range (4,500 samples, 0.60%)</title><rect x="183.8" y="101" width="7.1" height="15.0" fill="rgb(247,146,46)" rx="2" ry="2" />
+<text  x="186.79" y="111.5" ></text>
+</g>
+<g >
+<title>B_eq (4,860 samples, 0.65%)</title><rect x="121.2" y="101" width="7.7" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="124.23" y="111.5" ></text>
+</g>
+<g >
+<title>B_sub (3,200 samples, 0.43%)</title><rect x="578.8" y="69" width="5.1" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="581.80" y="79.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (3,976 samples, 0.53%)</title><rect x="143.8" y="85" width="6.3" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="146.85" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (300 samples, 0.04%)</title><rect x="309.6" y="85" width="0.4" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="312.56" y="95.5" ></text>
+</g>
+<g >
+<title>nat_sub (9,912 samples, 1.33%)</title><rect x="1114.5" y="69" width="15.7" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="1117.55" y="79.5" ></text>
+</g>
+<g >
+<title>memcpy (180 samples, 0.02%)</title><rect x="302.0" y="53" width="0.3" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="305.03" y="63.5" ></text>
+</g>
+<g >
+<title>B_eq (210 samples, 0.03%)</title><rect x="322.3" y="85" width="0.3" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="325.27" y="95.5" ></text>
+</g>
+<g >
+<title>nat_sub (252 samples, 0.03%)</title><rect x="151.6" y="85" width="0.4" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="154.56" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (1,136 samples, 0.15%)</title><rect x="576.4" y="53" width="1.8" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="579.37" y="63.5" ></text>
+</g>
+<g >
+<title>B_sub (256 samples, 0.03%)</title><rect x="329.4" y="69" width="0.4" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="332.44" y="79.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (1,648 samples, 0.22%)</title><rect x="473.5" y="85" width="2.7" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="476.55" y="95.5" ></text>
+</g>
+<g >
+<title>alloc_array (141 samples, 0.02%)</title><rect x="467.8" y="85" width="0.2" height="15.0" fill="rgb(239,128,37)" rx="2" ry="2" />
+<text  x="470.78" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (952 samples, 0.13%)</title><rect x="236.0" y="69" width="1.5" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="239.01" y="79.5" ></text>
+</g>
+<g >
+<title>alloc_words (78 samples, 0.01%)</title><rect x="1144.6" y="133" width="0.1" height="15.0" fill="rgb(241,128,39)" rx="2" ry="2" />
+<text  x="1147.60" y="143.5" ></text>
+</g>
+<g >
+<title>opponent (3,600 samples, 0.48%)</title><rect x="578.2" y="85" width="5.7" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="581.16" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (1,800 samples, 0.24%)</title><rect x="319.4" y="85" width="2.9" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="322.42" y="95.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (3,266 samples, 0.44%)</title><rect x="539.4" y="69" width="5.2" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="542.43" y="79.5" ></text>
+</g>
+<g >
+<title>trans_state4 (69 samples, 0.01%)</title><rect x="1167.5" y="133" width="0.2" height="15.0" fill="rgb(243,158,42)" rx="2" ry="2" />
+<text  x="1170.54" y="143.5" ></text>
+</g>
+<g >
+<title>nat_sub (84 samples, 0.01%)</title><rect x="316.7" y="53" width="0.2" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="319.74" y="63.5" ></text>
+</g>
+<g >
+<title>Array_init (2,532 samples, 0.34%)</title><rect x="464.0" y="101" width="4.0" height="15.0" fill="rgb(236,150,34)" rx="2" ry="2" />
+<text  x="467.00" y="111.5" ></text>
+</g>
+<g >
+<title>alloc_words (2,808 samples, 0.38%)</title><rect x="186.5" y="85" width="4.4" height="15.0" fill="rgb(241,128,39)" rx="2" ry="2" />
+<text  x="189.47" y="95.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (69 samples, 0.01%)</title><rect x="307.7" y="101" width="0.1" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="310.69" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (68 samples, 0.01%)</title><rect x="1189.6" y="101" width="0.1" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="1192.63" y="111.5" ></text>
+</g>
+<g >
+<title>B_mul (81 samples, 0.01%)</title><rect x="303.5" y="117" width="0.1" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="306.45" y="127.5" ></text>
+</g>
+<g >
+<title>@deserialize&lt;&gt; (2,080 samples, 0.28%)</title><rect x="237.5" y="133" width="3.3" height="15.0" fill="rgb(242,176,41)" rx="2" ry="2" />
+<text  x="240.52" y="143.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (552 samples, 0.07%)</title><rect x="318.5" y="85" width="0.9" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="321.55" y="95.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (4,738 samples, 0.64%)</title><rect x="456.5" y="101" width="7.5" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="459.51" y="111.5" ></text>
+</g>
+<g >
+<title>B_sub (45,312 samples, 6.07%)</title><rect x="1058.6" y="85" width="71.6" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="1061.55" y="95.5" >B_sub</text>
+</g>
+<g >
+<title>idl_sub_buf_init (76 samples, 0.01%)</title><rect x="238.5" y="117" width="0.1" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="241.47" y="127.5" ></text>
+</g>
+<g >
+<title>B_add (1,600 samples, 0.21%)</title><rect x="294.6" y="85" width="2.5" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="297.58" y="95.5" ></text>
+</g>
+<g >
+<title>exists (1,732 samples, 0.23%)</title><rect x="326.7" y="85" width="2.7" height="15.0" fill="rgb(234,142,32)" rx="2" ry="2" />
+<text  x="329.65" y="95.5" ></text>
+</g>
+<g >
+<title>parse_idl_header (1,752 samples, 0.23%)</title><rect x="1140.3" y="117" width="2.8" height="15.0" fill="rgb(243,149,41)" rx="2" ry="2" />
+<text  x="1143.31" y="127.5" ></text>
+</g>
+<g >
+<title>exists (5,226 samples, 0.70%)</title><rect x="316.9" y="101" width="8.2" height="15.0" fill="rgb(234,142,32)" rx="2" ry="2" />
+<text  x="319.88" y="111.5" ></text>
+</g>
+<g >
+<title>B_eq (275 samples, 0.04%)</title><rect x="305.0" y="101" width="0.5" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="308.04" y="111.5" ></text>
+</g>
+<g >
+<title>nat_sub (189 samples, 0.03%)</title><rect x="515.8" y="85" width="0.3" height="15.0" fill="rgb(228,158,25)" rx="2" ry="2" />
+<text  x="518.78" y="95.5" ></text>
+</g>
+<g >
+<title>B_lt (480 samples, 0.06%)</title><rect x="323.4" y="85" width="0.7" height="15.0" fill="rgb(226,146,24)" rx="2" ry="2" />
+<text  x="326.36" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (576 samples, 0.08%)</title><rect x="321.4" y="69" width="0.9" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="324.36" y="79.5" ></text>
+</g>
+<g >
+<title>Array_init (844 samples, 0.11%)</title><rect x="281.0" y="117" width="1.4" height="15.0" fill="rgb(236,150,34)" rx="2" ry="2" />
+<text  x="284.02" y="127.5" ></text>
+</g>
+<g >
+<title>B_eq (300 samples, 0.04%)</title><rect x="307.9" y="101" width="0.5" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="310.92" y="111.5" ></text>
+</g>
+<g >
+<title>memcpy (72 samples, 0.01%)</title><rect x="1182.3" y="117" width="0.1" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="1185.31" y="127.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (288 samples, 0.04%)</title><rect x="151.1" y="85" width="0.5" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="154.11" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (216 samples, 0.03%)</title><rect x="515.4" y="85" width="0.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="518.44" y="95.5" ></text>
+</g>
+<g >
+<title>$lambda (8,513 samples, 1.14%)</title><rect x="1167.8" y="133" width="13.4" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="1170.77" y="143.5" ></text>
+</g>
+<g >
+<title>compacting_gc (5,256 samples, 0.70%)</title><rect x="272.6" y="133" width="8.3" height="15.0" fill="rgb(227,149,24)" rx="2" ry="2" />
+<text  x="275.62" y="143.5" ></text>
+</g>
+<g >
+<title>B_sub (864 samples, 0.12%)</title><rect x="514.7" y="101" width="1.4" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="517.71" y="111.5" ></text>
+</g>
+<g >
+<title>@serialize_go&lt;t&gt; (29,900 samples, 4.01%)</title><rect x="10.9" y="85" width="47.3" height="15.0" fill="rgb(244,156,43)" rx="2" ry="2" />
+<text  x="13.94" y="95.5" >@ser..</text>
+</g>
+<g >
+<title>range (125 samples, 0.02%)</title><rect x="1181.0" y="101" width="0.2" height="15.0" fill="rgb(247,146,46)" rx="2" ry="2" />
+<text  x="1184.04" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::compacting_gc::h6c11211cef49c9d1 (14,421 samples, 1.93%)</title><rect x="1144.7" y="117" width="22.8" height="15.0" fill="rgb(231,127,29)" rx="2" ry="2" />
+<text  x="1147.73" y="127.5" >m..</text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_stack::push_mark_stack::h372a7e8aba233246 (200 samples, 0.03%)</title><rect x="270.8" y="85" width="0.3" height="15.0" fill="rgb(237,127,36)" rx="2" ry="2" />
+<text  x="273.81" y="95.5" ></text>
+</g>
+<g >
+<title>leb128_decode (134 samples, 0.02%)</title><rect x="1181.8" y="101" width="0.2" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="1184.79" y="111.5" ></text>
+</g>
+<g >
+<title>B_mul (135 samples, 0.02%)</title><rect x="1173.9" y="101" width="0.2" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="1176.93" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::bitmap::BitmapIter::next::hf0f0a17700c3ab01 (666 samples, 0.09%)</title><rect x="1165.0" y="101" width="1.0" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="1167.99" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::types::object_size::h0cd0fcbd64ac8470 (128 samples, 0.02%)</title><rect x="280.7" y="101" width="0.2" height="15.0" fill="rgb(238,127,36)" rx="2" ry="2" />
+<text  x="283.73" y="111.5" ></text>
+</g>
+<g >
+<title>memcpy (12,224 samples, 1.64%)</title><rect x="38.9" y="37" width="19.3" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="41.90" y="47.5" ></text>
+</g>
+<g >
+<title>sleb128_decode (756 samples, 0.10%)</title><rect x="1141.9" y="101" width="1.2" height="15.0" fill="rgb(250,128,49)" rx="2" ry="2" />
+<text  x="1144.89" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (68 samples, 0.01%)</title><rect x="280.6" y="101" width="0.1" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="283.62" y="111.5" ></text>
+</g>
+<g >
+<title>opt_project (864 samples, 0.12%)</title><rect x="1130.2" y="101" width="1.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="1133.23" y="111.5" ></text>
+</g>
+<g >
+<title>B_lt (2,840 samples, 0.38%)</title><rect x="567.6" y="69" width="4.5" height="15.0" fill="rgb(226,146,24)" rx="2" ry="2" />
+<text  x="570.61" y="79.5" ></text>
+</g>
+<g >
+<title>sleb128_decode (756 samples, 0.10%)</title><rect x="1143.2" y="117" width="1.2" height="15.0" fill="rgb(250,128,49)" rx="2" ry="2" />
+<text  x="1146.21" y="127.5" ></text>
+</g>
+<g >
+<title>alloc_blob (108 samples, 0.01%)</title><rect x="1144.4" y="133" width="0.2" height="15.0" fill="rgb(239,128,38)" rx="2" ry="2" />
+<text  x="1147.43" y="143.5" ></text>
+</g>
+<g >
+<title>text_to_buf (264 samples, 0.04%)</title><rect x="301.9" y="69" width="0.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="304.90" y="79.5" ></text>
+</g>
+<g >
+<title>B_mul (108 samples, 0.01%)</title><rect x="326.5" y="85" width="0.2" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="329.48" y="95.5" ></text>
+</g>
+<g >
+<title>$lambda (30,908 samples, 4.14%)</title><rect x="10.3" y="117" width="48.9" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="13.27" y="127.5" >$lam..</text>
+</g>
+<g >
+<title>opponent (288 samples, 0.04%)</title><rect x="329.4" y="85" width="0.4" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="332.39" y="95.5" ></text>
+</g>
+<g >
+<title>opt_project (256 samples, 0.03%)</title><rect x="1180.6" y="101" width="0.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="1183.63" y="111.5" ></text>
+</g>
+<g >
+<title>opt_project (1,152 samples, 0.15%)</title><rect x="182.0" y="101" width="1.8" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="184.97" y="111.5" ></text>
+</g>
+<g >
+<title>init (8,506 samples, 1.14%)</title><rect x="1167.8" y="117" width="13.4" height="15.0" fill="rgb(236,161,34)" rx="2" ry="2" />
+<text  x="1170.78" y="127.5" ></text>
+</g>
+<g >
+<title>init (11,551 samples, 1.55%)</title><rect x="280.9" y="133" width="18.3" height="15.0" fill="rgb(236,161,34)" rx="2" ry="2" />
+<text  x="283.93" y="143.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (1,728 samples, 0.23%)</title><rect x="1040.9" y="69" width="2.8" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="1043.93" y="79.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (192 samples, 0.03%)</title><rect x="324.8" y="69" width="0.3" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="327.84" y="79.5" ></text>
+</g>
+<g >
+<title>memcpy (3,052 samples, 0.41%)</title><rect x="230.6" y="85" width="4.8" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="233.61" y="95.5" ></text>
+</g>
+<g >
+<title>B_eq (1,060 samples, 0.14%)</title><rect x="561.4" y="69" width="1.7" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="564.44" y="79.5" ></text>
+</g>
+<g >
+<title>B_mul (13,419 samples, 1.80%)</title><rect x="128.9" y="101" width="21.2" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="131.91" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx (816 samples, 0.11%)</title><rect x="290.4" y="85" width="1.3" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="293.38" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (7,200 samples, 0.97%)</title><rect x="162.7" y="85" width="11.4" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="165.67" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (192 samples, 0.03%)</title><rect x="328.1" y="53" width="0.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="331.15" y="63.5" ></text>
+</g>
+<g >
+<title>$lambda (143,718 samples, 19.26%)</title><rect x="10.2" y="133" width="227.3" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="13.20" y="143.5" >$lambda</text>
+</g>
+<g >
+<title>opt_inject (256 samples, 0.03%)</title><rect x="1180.2" y="85" width="0.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="1183.20" y="95.5" ></text>
+</g>
+<g >
+<title>memcmp (179 samples, 0.02%)</title><rect x="283.7" y="101" width="0.3" height="15.0" fill="rgb(238,144,36)" rx="2" ry="2" />
+<text  x="286.73" y="111.5" ></text>
+</g>
+<g >
+<title>B_mul (486 samples, 0.07%)</title><rect x="315.4" y="69" width="0.8" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="318.42" y="79.5" ></text>
+</g>
+<g >
+<title>memcpy (552 samples, 0.07%)</title><rect x="279.1" y="101" width="0.9" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="282.12" y="111.5" ></text>
+</g>
+<g >
+<title>leb128_decode (201 samples, 0.03%)</title><rect x="1140.0" y="117" width="0.3" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="1142.99" y="127.5" ></text>
+</g>
+<g >
+<title>B_add (5,400 samples, 0.72%)</title><rect x="1035.1" y="85" width="8.6" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="1038.12" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::bitmap::BitmapIter::next::hf0f0a17700c3ab01 (1,288 samples, 0.17%)</title><rect x="268.3" y="101" width="2.1" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="271.33" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx (816 samples, 0.11%)</title><rect x="1172.4" y="85" width="1.3" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="1175.44" y="95.5" ></text>
+</g>
+<g >
+<title>B_sub (96 samples, 0.01%)</title><rect x="305.5" y="101" width="0.1" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="308.50" y="111.5" ></text>
+</g>
+<g >
+<title>memcpy (213 samples, 0.03%)</title><rect x="302.7" y="85" width="0.3" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="305.66" y="95.5" ></text>
+</g>
+<g >
+<title>B_gt (2,430 samples, 0.33%)</title><rect x="1043.7" y="85" width="3.8" height="15.0" fill="rgb(232,124,30)" rx="2" ry="2" />
+<text  x="1046.66" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::principal_id::enc_stash::hd09f7ce2f6e06dba (372 samples, 0.05%)</title><rect x="285.1" y="85" width="0.6" height="15.0" fill="rgb(229,127,26)" rx="2" ry="2" />
+<text  x="288.10" y="95.5" ></text>
+</g>
+<g >
+<title>compacting_gc (19,784 samples, 2.65%)</title><rect x="241.1" y="133" width="31.3" height="15.0" fill="rgb(227,149,24)" rx="2" ry="2" />
+<text  x="244.08" y="143.5" >co..</text>
+</g>
+<g >
+<title>can_tag_i64 (2,304 samples, 0.31%)</title><rect x="170.4" y="69" width="3.7" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="173.41" y="79.5" ></text>
+</g>
+<g >
+<title>B_add (10,650 samples, 1.43%)</title><rect x="544.6" y="69" width="16.8" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="547.59" y="79.5" ></text>
+</g>
+<g >
+<title>B_add (1,600 samples, 0.21%)</title><rect x="1176.6" y="85" width="2.6" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="1179.64" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (68 samples, 0.01%)</title><rect x="284.1" y="101" width="0.1" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="287.09" y="111.5" ></text>
+</g>
+<g >
+<title>memset (744 samples, 0.10%)</title><rect x="267.2" y="101" width="1.1" height="15.0" fill="rgb(237,144,35)" rx="2" ry="2" />
+<text  x="270.16" y="111.5" ></text>
+</g>
+<g >
+<title>B_add (100 samples, 0.01%)</title><rect x="291.7" y="101" width="0.1" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="294.67" y="111.5" ></text>
+</g>
+<g >
+<title>memset (444 samples, 0.06%)</title><rect x="1164.3" y="101" width="0.7" height="15.0" fill="rgb(237,144,35)" rx="2" ry="2" />
+<text  x="1167.29" y="111.5" ></text>
+</g>
+<g >
+<title>opt_inject (864 samples, 0.12%)</title><rect x="1047.5" y="85" width="1.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="1050.50" y="95.5" ></text>
+</g>
+<g >
+<title>__wasm_apply_data_relocs (679 samples, 0.09%)</title><rect x="299.3" y="117" width="1.0" height="15.0" fill="rgb(244,119,43)" rx="2" ry="2" />
+<text  x="302.26" y="127.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (184 samples, 0.02%)</title><rect x="327.2" y="69" width="0.3" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="330.21" y="79.5" ></text>
+</g>
+<g >
+<title>opt_inject (256 samples, 0.03%)</title><rect x="298.1" y="85" width="0.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="301.14" y="95.5" ></text>
+</g>
+<g >
+<title>parse_idl_header (275 samples, 0.04%)</title><rect x="1181.6" y="117" width="0.5" height="15.0" fill="rgb(243,149,41)" rx="2" ry="2" />
+<text  x="1184.62" y="127.5" ></text>
+</g>
+<g >
+<title>memcpy (240 samples, 0.03%)</title><rect x="27.2" y="53" width="0.4" height="15.0" fill="rgb(248,144,48)" rx="2" ry="2" />
+<text  x="30.18" y="63.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::bitmap::BitmapIter::next::hf0f0a17700c3ab01 (172 samples, 0.02%)</title><rect x="1189.2" y="101" width="0.2" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="1192.16" y="111.5" ></text>
+</g>
+<g >
+<title>alloc_blob (216 samples, 0.03%)</title><rect x="302.3" y="85" width="0.4" height="15.0" fill="rgb(239,128,38)" rx="2" ry="2" />
+<text  x="305.32" y="95.5" ></text>
+</g>
+<g >
+<title>Array.idx (1,704 samples, 0.23%)</title><rect x="541.9" y="53" width="2.7" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="544.90" y="63.5" ></text>
+</g>
+<g >
+<title>opponent (108 samples, 0.01%)</title><rect x="305.5" y="117" width="0.1" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="308.48" y="127.5" ></text>
+</g>
+<g >
+<title>memset (104 samples, 0.01%)</title><rect x="280.0" y="101" width="0.2" height="15.0" fill="rgb(237,144,35)" rx="2" ry="2" />
+<text  x="282.99" y="111.5" ></text>
+</g>
+<g >
+<title>eventually (5,284 samples, 0.71%)</title><rect x="308.5" y="101" width="8.4" height="15.0" fill="rgb(243,165,42)" rx="2" ry="2" />
+<text  x="311.52" y="111.5" ></text>
+</g>
+<g >
+<title>B_gt (650 samples, 0.09%)</title><rect x="297.1" y="85" width="1.0" height="15.0" fill="rgb(232,124,30)" rx="2" ry="2" />
+<text  x="300.12" y="95.5" ></text>
+</g>
+<g >
+<title>next (13,770 samples, 1.85%)</title><rect x="1027.1" y="101" width="21.8" height="15.0" fill="rgb(230,219,27)" rx="2" ry="2" />
+<text  x="1030.09" y="111.5" >n..</text>
+</g>
+<g >
+<title>can_tag_i64 (3,408 samples, 0.46%)</title><rect x="556.0" y="53" width="5.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="559.05" y="63.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_object::h4c1039fc91f5c068 (360 samples, 0.05%)</title><rect x="1166.0" y="101" width="0.6" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="1169.04" y="111.5" ></text>
+</g>
+<g >
+<title>B_sub (160 samples, 0.02%)</title><rect x="292.1" y="101" width="0.2" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="295.09" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::types::object_size::h0cd0fcbd64ac8470 (512 samples, 0.07%)</title><rect x="271.6" y="101" width="0.8" height="15.0" fill="rgb(238,127,36)" rx="2" ry="2" />
+<text  x="274.56" y="111.5" ></text>
+</g>
+<g >
+<title>leb128_decode (268 samples, 0.04%)</title><rect x="238.6" y="117" width="0.5" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="241.65" y="127.5" ></text>
+</g>
+<g >
+<title>Array.idx (5,964 samples, 0.80%)</title><rect x="92.1" y="85" width="9.5" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="95.14" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (800 samples, 0.11%)</title><rect x="581.5" y="53" width="1.3" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="584.48" y="63.5" ></text>
+</g>
+<g >
+<title>exists (3,892 samples, 0.52%)</title><rect x="310.0" y="85" width="6.2" height="15.0" fill="rgb(234,142,32)" rx="2" ry="2" />
+<text  x="313.04" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (96 samples, 0.01%)</title><rect x="326.3" y="69" width="0.2" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="329.33" y="79.5" ></text>
+</g>
+<g >
+<title>@buffer_size&lt;t&gt; (148 samples, 0.02%)</title><rect x="10.7" y="85" width="0.2" height="15.0" fill="rgb(244,118,43)" rx="2" ry="2" />
+<text  x="13.70" y="95.5" ></text>
+</g>
+<g >
+<title>next (18,360 samples, 2.46%)</title><rect x="152.0" y="101" width="29.0" height="15.0" fill="rgb(230,219,27)" rx="2" ry="2" />
+<text  x="154.96" y="111.5" >next</text>
+</g>
+<g >
+<title>B_add (75 samples, 0.01%)</title><rect x="307.8" y="101" width="0.1" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="310.80" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (204 samples, 0.03%)</title><rect x="302.3" y="69" width="0.4" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="305.34" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (68 samples, 0.01%)</title><rect x="285.0" y="85" width="0.1" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="288.00" y="95.5" ></text>
+</g>
+<g >
+<title>text_to_buf (29,728 samples, 3.98%)</title><rect x="11.2" y="69" width="47.0" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="14.21" y="79.5" >text..</text>
+</g>
+<g >
+<title>@buffer_size&lt;t&gt; (111 samples, 0.01%)</title><rect x="301.5" y="85" width="0.2" height="15.0" fill="rgb(244,118,43)" rx="2" ry="2" />
+<text  x="304.52" y="95.5" ></text>
+</g>
+<g >
+<title>@deserialize_go&lt;I&gt; (900 samples, 0.12%)</title><rect x="1138.4" y="117" width="1.5" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1141.44" y="127.5" ></text>
+</g>
+<g >
+<title>Array.idx (2,472 samples, 0.33%)</title><rect x="460.1" y="85" width="3.9" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="463.09" y="95.5" ></text>
+</g>
+<g >
+<title>B_ge (2,840 samples, 0.38%)</title><rect x="563.1" y="69" width="4.5" height="15.0" fill="rgb(241,124,39)" rx="2" ry="2" />
+<text  x="566.11" y="79.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (69 samples, 0.01%)</title><rect x="303.0" y="117" width="0.1" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="306.02" y="127.5" ></text>
+</g>
+<g >
+<title>B_mul (216 samples, 0.03%)</title><rect x="329.1" y="69" width="0.3" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="332.05" y="79.5" ></text>
+</g>
+<g >
+<title>obj_idx&lt;0&gt; (612 samples, 0.08%)</title><rect x="181.0" y="101" width="1.0" height="15.0" fill="rgb(247,139,46)" rx="2" ry="2" />
+<text  x="184.00" y="111.5" ></text>
+</g>
+<g >
+<title>render (112,762 samples, 15.12%)</title><rect x="59.2" y="117" width="178.3" height="15.0" fill="rgb(243,181,41)" rx="2" ry="2" />
+<text  x="62.16" y="127.5" >render</text>
+</g>
+<g >
+<title>can_tag_i64 (928 samples, 0.12%)</title><rect x="528.1" y="69" width="1.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="531.08" y="79.5" ></text>
+</g>
+<g >
+<title>B_eq (70 samples, 0.01%)</title><rect x="303.2" y="117" width="0.2" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="306.24" y="127.5" ></text>
+</g>
+<g >
+<title>opt_project (256 samples, 0.03%)</title><rect x="298.6" y="101" width="0.4" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="301.58" y="111.5" ></text>
+</g>
+<g >
+<title>is_empty (1,201 samples, 0.16%)</title><rect x="303.6" y="117" width="1.9" height="15.0" fill="rgb(243,129,42)" rx="2" ry="2" />
+<text  x="306.58" y="127.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (1,672 samples, 0.22%)</title><rect x="512.1" y="85" width="2.6" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="515.07" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (102 samples, 0.01%)</title><rect x="1141.7" y="101" width="0.2" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="1144.72" y="111.5" ></text>
+</g>
+<g >
+<title>B_mul (81 samples, 0.01%)</title><rect x="308.4" y="101" width="0.1" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="311.39" y="111.5" ></text>
+</g>
+<g >
+<title>@serialize&lt;&gt; (225 samples, 0.03%)</title><rect x="1182.1" y="133" width="0.3" height="15.0" fill="rgb(242,156,41)" rx="2" ry="2" />
+<text  x="1185.07" y="143.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_object::h4c1039fc91f5c068 (480 samples, 0.06%)</title><rect x="270.4" y="101" width="0.7" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="273.37" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::bitmap::BitmapIter::next::hf0f0a17700c3ab01 (172 samples, 0.02%)</title><rect x="280.2" y="101" width="0.2" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="283.16" y="111.5" ></text>
+</g>
+<g >
+<title>@deserialize&lt;&gt; (520 samples, 0.07%)</title><rect x="1181.2" y="133" width="0.9" height="15.0" fill="rgb(242,176,41)" rx="2" ry="2" />
+<text  x="1184.24" y="143.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (512 samples, 0.07%)</title><rect x="296.3" y="69" width="0.8" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="299.31" y="79.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (414 samples, 0.06%)</title><rect x="311.3" y="69" width="0.6" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="314.29" y="79.5" ></text>
+</g>
+<g >
+<title>B_sub (160 samples, 0.02%)</title><rect x="1174.1" y="101" width="0.3" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="1177.14" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_object::h4c1039fc91f5c068 (120 samples, 0.02%)</title><rect x="1189.4" y="101" width="0.2" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="1192.44" y="111.5" ></text>
+</g>
+<g >
+<title>B_sub (768 samples, 0.10%)</title><rect x="330.0" y="85" width="1.2" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="333.00" y="95.5" ></text>
+</g>
+<g >
+<title>compacting_gc (4,714 samples, 0.63%)</title><rect x="1182.5" y="133" width="7.4" height="15.0" fill="rgb(227,149,24)" rx="2" ry="2" />
+<text  x="1185.48" y="143.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (92 samples, 0.01%)</title><rect x="325.9" y="85" width="0.1" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="328.86" y="95.5" ></text>
+</g>
+<g >
+<title>canister_init (16,853 samples, 2.26%)</title><rect x="272.6" y="149" width="26.7" height="15.0" fill="rgb(236,106,34)" rx="2" ry="2" />
+<text  x="275.60" y="159.5" >c..</text>
+</g>
+<g >
+<title>exists (280,218 samples, 37.56%)</title><rect x="583.9" y="101" width="443.2" height="15.0" fill="rgb(234,142,32)" rx="2" ry="2" />
+<text  x="586.86" y="111.5" >exists</text>
+</g>
+<g >
+<title>B_mul (648 samples, 0.09%)</title><rect x="324.1" y="85" width="1.0" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="327.12" y="95.5" ></text>
+</g>
+<g >
+<title>opponent (864 samples, 0.12%)</title><rect x="329.8" y="101" width="1.4" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="332.85" y="111.5" ></text>
+</g>
+<g >
+<title>B_add (75 samples, 0.01%)</title><rect x="303.1" y="117" width="0.1" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="306.13" y="127.5" ></text>
+</g>
+<g >
+<title>alloc_blob (144 samples, 0.02%)</title><rect x="240.8" y="133" width="0.3" height="15.0" fill="rgb(239,128,38)" rx="2" ry="2" />
+<text  x="243.85" y="143.5" ></text>
+</g>
+<g >
+<title>text_to_buf (19,392 samples, 2.60%)</title><rect x="27.6" y="53" width="30.6" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="30.56" y="63.5" >te..</text>
+</g>
+<g >
+<title>alloc_words (78 samples, 0.01%)</title><rect x="299.1" y="85" width="0.1" height="15.0" fill="rgb(241,128,39)" rx="2" ry="2" />
+<text  x="302.05" y="95.5" ></text>
+</g>
+<g >
+<title>B_add (99,300 samples, 13.31%)</title><rect x="720.8" y="85" width="157.1" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="723.79" y="95.5" >B_add</text>
+</g>
+<g >
+<title>memset (104 samples, 0.01%)</title><rect x="1189.0" y="101" width="0.2" height="15.0" fill="rgb(237,144,35)" rx="2" ry="2" />
+<text  x="1192.00" y="111.5" ></text>
+</g>
+<g >
+<title>bigint_sleb128_decode_word64 (459 samples, 0.06%)</title><rect x="1139.1" y="101" width="0.8" height="15.0" fill="rgb(237,113,36)" rx="2" ry="2" />
+<text  x="1142.13" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx (96 samples, 0.01%)</title><rect x="327.4" y="53" width="0.1" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="330.35" y="63.5" ></text>
+</g>
+<g >
+<title>B_ge (360 samples, 0.05%)</title><rect x="314.3" y="69" width="0.6" height="15.0" fill="rgb(241,124,39)" rx="2" ry="2" />
+<text  x="317.29" y="79.5" ></text>
+</g>
+<g >
+<title>B_sub (1,152 samples, 0.15%)</title><rect x="150.1" y="101" width="1.9" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="153.14" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::compacting_gc::h6c11211cef49c9d1 (5,255 samples, 0.70%)</title><rect x="272.6" y="117" width="8.3" height="15.0" fill="rgb(231,127,29)" rx="2" ry="2" />
+<text  x="275.62" y="127.5" ></text>
+</g>
+<g >
+<title>@deserialize&lt;III&gt; (4,725 samples, 0.63%)</title><rect x="1136.9" y="133" width="7.5" height="15.0" fill="rgb(243,176,41)" rx="2" ry="2" />
+<text  x="1139.93" y="143.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (136 samples, 0.02%)</title><rect x="240.6" y="101" width="0.2" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="243.60" y="111.5" ></text>
+</g>
+<g >
+<title>B_ge (160 samples, 0.02%)</title><rect x="328.5" y="69" width="0.3" height="15.0" fill="rgb(241,124,39)" rx="2" ry="2" />
+<text  x="331.55" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::text::alloc_text_blob::h65a8860ad2532130 (1,316 samples, 0.18%)</title><rect x="235.4" y="85" width="2.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="238.44" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (11,328 samples, 1.52%)</title><rect x="1096.6" y="69" width="17.9" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="1099.63" y="79.5" ></text>
+</g>
+<g >
+<title>B_lt (160 samples, 0.02%)</title><rect x="328.8" y="69" width="0.3" height="15.0" fill="rgb(226,146,24)" rx="2" ry="2" />
+<text  x="331.80" y="79.5" ></text>
+</g>
+<g >
+<title>B_mul (3,834 samples, 0.51%)</title><rect x="572.1" y="69" width="6.1" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="575.10" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::principal_id::principal_of_blob::h82817579bc445a3b (945 samples, 0.13%)</title><rect x="284.2" y="101" width="1.5" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="287.20" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx_bigint (11,431 samples, 1.53%)</title><rect x="83.5" y="101" width="18.1" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="86.49" y="111.5" ></text>
+</g>
+<g >
+<title>B_eq (11,190 samples, 1.50%)</title><rect x="877.9" y="85" width="17.7" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="880.85" y="95.5" ></text>
+</g>
+<g >
+<title>blob_of_principal (2,076 samples, 0.28%)</title><rect x="282.4" y="117" width="3.3" height="15.0" fill="rgb(228,110,25)" rx="2" ry="2" />
+<text  x="285.44" y="127.5" ></text>
+</g>
+<g >
+<title>board (166,018 samples, 22.25%)</title><rect x="10.0" y="149" width="262.6" height="15.0" fill="rgb(249,157,49)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" >board</text>
+</g>
+<g >
+<title>text_concat (29,468 samples, 3.95%)</title><rect x="190.9" y="101" width="46.6" height="15.0" fill="rgb(232,171,30)" rx="2" ry="2" />
+<text  x="193.91" y="111.5" >text..</text>
+</g>
+<g >
+<title>next (3,926 samples, 0.53%)</title><rect x="1174.4" y="101" width="6.2" height="15.0" fill="rgb(230,219,27)" rx="2" ry="2" />
+<text  x="1177.40" y="111.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (192 samples, 0.03%)</title><rect x="330.6" y="69" width="0.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="333.65" y="79.5" ></text>
+</g>
+<g >
+<title>set_and_flip (16,164 samples, 2.17%)</title><rect x="305.6" y="117" width="25.6" height="15.0" fill="rgb(244,154,43)" rx="2" ry="2" />
+<text  x="308.65" y="127.5" >s..</text>
+</g>
+<g >
+<title>Array.idx_bigint (1,564 samples, 0.21%)</title><rect x="289.2" y="101" width="2.5" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="292.20" y="111.5" ></text>
+</g>
+<g >
+<title>all (746,015 samples, 100%)</title><rect x="10.0" y="165" width="1180.0" height="15.0" fill="rgb(255,230,55)" rx="2" ry="2" />
+<text  x="13.00" y="175.5" ></text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_object::h4c1039fc91f5c068 (120 samples, 0.02%)</title><rect x="280.4" y="101" width="0.2" height="15.0" fill="rgb(233,127,31)" rx="2" ry="2" />
+<text  x="283.43" y="111.5" ></text>
+</g>
+<g >
+<title>valid_moves (509,386 samples, 68.28%)</title><rect x="331.2" y="117" width="805.7" height="15.0" fill="rgb(237,120,35)" rx="2" ry="2" />
+<text  x="334.22" y="127.5" >valid_moves</text>
+</g>
+<g >
+<title>B_add (12,425 samples, 1.67%)</title><rect x="101.6" y="101" width="19.6" height="15.0" fill="rgb(253,143,53)" rx="2" ry="2" />
+<text  x="104.57" y="111.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (9,120 samples, 1.22%)</title><rect x="1012.7" y="69" width="14.4" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="1015.66" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (272 samples, 0.04%)</title><rect x="58.3" y="69" width="0.4" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="61.26" y="79.5" ></text>
+</g>
+<g >
+<title>opponent (432 samples, 0.06%)</title><rect x="316.2" y="85" width="0.7" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="319.19" y="95.5" ></text>
+</g>
+<g >
+<title>parse_idl_header (1,100 samples, 0.15%)</title><rect x="239.1" y="117" width="1.7" height="15.0" fill="rgb(243,149,41)" rx="2" ry="2" />
+<text  x="242.07" y="127.5" ></text>
+</g>
+<g >
+<title>B_eq (130 samples, 0.02%)</title><rect x="314.1" y="69" width="0.2" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="317.08" y="79.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (136 samples, 0.02%)</title><rect x="240.9" y="117" width="0.2" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="243.86" y="127.5" ></text>
+</g>
+<g >
+<title>alloc_blob (288 samples, 0.04%)</title><rect x="58.2" y="85" width="0.5" height="15.0" fill="rgb(239,128,38)" rx="2" ry="2" />
+<text  x="61.23" y="95.5" ></text>
+</g>
+<g >
+<title>B_mul (5,643 samples, 0.76%)</title><rect x="505.8" y="101" width="8.9" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="508.79" y="111.5" ></text>
+</g>
+<g >
+<title>B_eq (18,735 samples, 2.51%)</title><rect x="476.2" y="101" width="29.6" height="15.0" fill="rgb(239,130,38)" rx="2" ry="2" />
+<text  x="479.15" y="111.5" >B_eq</text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_array::hdf61863d125c75ff (135 samples, 0.02%)</title><rect x="467.8" y="69" width="0.2" height="15.0" fill="rgb(244,127,43)" rx="2" ry="2" />
+<text  x="470.79" y="79.5" ></text>
+</g>
+<g >
+<title>Array.idx (13,680 samples, 1.83%)</title><rect x="699.1" y="69" width="21.7" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="702.15" y="79.5" >A..</text>
+</g>
+<g >
+<title>can_tag_i64 (64 samples, 0.01%)</title><rect x="329.3" y="53" width="0.1" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="332.29" y="63.5" ></text>
+</g>
+<g >
+<title>opponent (50,976 samples, 6.83%)</title><rect x="1049.6" y="101" width="80.6" height="15.0" fill="rgb(241,199,39)" rx="2" ry="2" />
+<text  x="1052.60" y="111.5" >opponent</text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::compacting_gc::h6c11211cef49c9d1 (19,780 samples, 2.65%)</title><rect x="241.1" y="117" width="31.3" height="15.0" fill="rgb(231,127,29)" rx="2" ry="2" />
+<text  x="244.08" y="127.5" >mo..</text>
+</g>
+<g >
+<title>motoko_rts::gc::mark_compact::mark_stack::push_mark_stack::h372a7e8aba233246 (150 samples, 0.02%)</title><rect x="1166.4" y="85" width="0.2" height="15.0" fill="rgb(237,127,36)" rx="2" ry="2" />
+<text  x="1169.38" y="95.5" ></text>
+</g>
+<g >
+<title>can_tag_i64 (96 samples, 0.01%)</title><rect x="309.9" y="69" width="0.1" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="312.88" y="79.5" ></text>
+</g>
+<g >
+<title>B_ge (480 samples, 0.06%)</title><rect x="322.6" y="85" width="0.8" height="15.0" fill="rgb(241,124,39)" rx="2" ry="2" />
+<text  x="325.60" y="95.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (102 samples, 0.01%)</title><rect x="1144.4" y="117" width="0.2" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="1147.44" y="127.5" ></text>
+</g>
+<g >
+<title>link_start (727 samples, 0.10%)</title><rect x="299.3" y="149" width="1.1" height="15.0" fill="rgb(239,129,37)" rx="2" ry="2" />
+<text  x="302.25" y="159.5" ></text>
+</g>
+<g >
+<title>opt_inject (1,152 samples, 0.15%)</title><rect x="179.2" y="85" width="1.8" height="15.0" fill="rgb(241,186,39)" rx="2" ry="2" />
+<text  x="182.18" y="95.5" ></text>
+</g>
+<g >
+<title>alloc_blob (72 samples, 0.01%)</title><rect x="1182.2" y="117" width="0.1" height="15.0" fill="rgb(239,128,38)" rx="2" ry="2" />
+<text  x="1185.20" y="127.5" ></text>
+</g>
+<g >
+<title>B_mul (30,780 samples, 4.13%)</title><rect x="978.4" y="85" width="48.7" height="15.0" fill="rgb(232,143,30)" rx="2" ry="2" />
+<text  x="981.40" y="95.5" >B_mul</text>
+</g>
+<g >
+<title>Array.idx_bigint (1,564 samples, 0.21%)</title><rect x="1171.3" y="101" width="2.4" height="15.0" fill="rgb(238,150,36)" rx="2" ry="2" />
+<text  x="1174.25" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (204 samples, 0.03%)</title><rect x="1166.6" y="101" width="0.3" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="1169.61" y="111.5" ></text>
+</g>
+<g >
+<title>Array.idx (288 samples, 0.04%)</title><rect x="319.0" y="69" width="0.4" height="15.0" fill="rgb(247,150,46)" rx="2" ry="2" />
+<text  x="321.96" y="79.5" ></text>
+</g>
+<g >
+<title>B_sub (384 samples, 0.05%)</title><rect x="316.3" y="69" width="0.6" height="15.0" fill="rgb(228,124,25)" rx="2" ry="2" />
+<text  x="319.27" y="79.5" ></text>
+</g>
+<g >
+<title>leb128_decode (536 samples, 0.07%)</title><rect x="239.7" y="101" width="0.9" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="242.75" y="111.5" ></text>
+</g>
+<g >
+<title>next (3,926 samples, 0.53%)</title><rect x="292.3" y="101" width="6.2" height="15.0" fill="rgb(230,219,27)" rx="2" ry="2" />
+<text  x="295.34" y="111.5" ></text>
+</g>
+<g >
+<title>motoko_rts::memory::alloc_blob::hb87d531fc7688eb8 (272 samples, 0.04%)</title><rect x="271.1" y="101" width="0.5" height="15.0" fill="rgb(230,127,27)" rx="2" ry="2" />
+<text  x="274.13" y="111.5" ></text>
+</g>
+<g >
+<title>leb128_decode (402 samples, 0.05%)</title><rect x="1141.1" y="101" width="0.6" height="15.0" fill="rgb(250,149,49)" rx="2" ry="2" />
+<text  x="1144.09" y="111.5" ></text>
+</g>
+<g >
+<title>B_lt (26,880 samples, 3.60%)</title><rect x="935.9" y="85" width="42.5" height="15.0" fill="rgb(226,146,24)" rx="2" ry="2" />
+<text  x="938.89" y="95.5" >B_lt</text>
+</g>
+<g >
+<title>can_tag_i64 (144 samples, 0.02%)</title><rect x="316.0" y="53" width="0.2" height="15.0" fill="rgb(234,106,32)" rx="2" ry="2" />
+<text  x="318.97" y="63.5" ></text>
+</g>
+<g >
+<title>reset (14,090 samples, 1.89%)</title><rect x="1167.7" y="149" width="22.3" height="15.0" fill="rgb(237,165,35)" rx="2" ry="2" />
+<text  x="1170.71" y="159.5" >r..</text>
+</g>
+</g>
+</svg>
